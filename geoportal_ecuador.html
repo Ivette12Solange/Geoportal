@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Geoportal Ecuador - Observatorios Vulcanológicos</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<style>
+  body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+  #map { height: 100vh; }
+  #loading { 
+    position: absolute; 
+    top: 50%; 
+    left: 50%; 
+    transform: translate(-50%, -50%); 
+    z-index: 1000; 
+    background: white; 
+    padding: 20px; 
+    border-radius: 5px; 
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+  }
+  .layer-control {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: white;
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    z-index: 1000;
+  }
+  .layer-control label {
+    display: block;
+    margin: 5px 0;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="loading">Cargando capas...</div>
+<div class="layer-control">
+  <h4>Capas</h4>
+  <label><input type="checkbox" id="observatorios" checked> Observatorios</label>
+  <label><input type="checkbox" id="cantones" checked> Cantones</label>
+  <label><input type="checkbox" id="vias" checked> Vías</label>
+  <label><input type="checkbox" id="poblaciones" checked> Poblaciones</label>
+  <label><input type="checkbox" id="aeropuertos" checked> Aeropuertos</label>
+</div>
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+  // Configuración de la conexión a PostgreSQL
+  const DB_CONFIG = {
+    host: 'localhost',
+    port: 5432,
+    database: 'tu_base_datos',
+    user: 'tu_usuario',
+    password: 'tu_password'
+  };
+
+  // Crear el mapa centrado en Ecuador
+  const map = L.map('map').setView([-1.8312, -78.1834], 7);
+
+  // Capas base gratuitas (sin API key requerida)
+  const baseLayers = {
+    'OpenStreetMap': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19
+    }),
+    'CartoDB Positron': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap © CartoDB',
+      maxZoom: 19
+    }),
+    'CartoDB Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap © CartoDB',
+      maxZoom: 19
+    }),
+    'Terrain': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap © OpenTopoMap',
+      maxZoom: 17
+    })
+  };
+
+  // Añadir capa base por defecto
+  baseLayers['OpenStreetMap'].addTo(map);
+
+  // Variables para almacenar las capas
+  let layerGroups = {
+    observatorios: L.layerGroup(),
+    cantones: L.layerGroup(),
+    vias: L.layerGroup(),
+    poblaciones: L.layerGroup(),
+    aeropuertos: L.layerGroup()
+  };
+
+  // Función para ejecutar consultas SQL y obtener GeoJSON
+  async function fetchGeoJSONFromPostgres(tableName, geomColumn = 'geom') {
+    try {
+      // En un entorno real, necesitarías un endpoint backend que haga la consulta
+      // Aquí simulo la estructura que deberías tener
+      const query = `
+        SELECT json_build_object(
+          'type', 'FeatureCollection',
+          'features', json_agg(
+            json_build_object(
+              'type', 'Feature',
+              'geometry', ST_AsGeoJSON(${geomColumn})::json,
+              'properties', to_jsonb(row) - '${geomColumn}'
+            )
+          )
+        ) as geojson
+        FROM (SELECT * FROM ${tableName}) row;
+      `;
+      
+      // En producción, esto sería una llamada a tu API backend
+      const response = await fetch(`/api/geojson/${tableName}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: query })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Error fetching ${tableName}: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      return result.geojson;
+      
+    } catch (error) {
+      console.error(`Error cargando ${tableName}:`, error);
+      // Fallback a datos de ejemplo para demostración
+      return await fetchFallbackData(tableName);
+    }
+  }
+
+  // Función fallback para datos de ejemplo (mientras configuras la conexión real)
+  async function fetchFallbackData(tableName) {
+    console.log(`Usando datos de ejemplo para ${tableName}`);
+    
+    // Datos de ejemplo para demostración
+    const exampleData = {
+      observatorios: {
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            properties: {
+              nombre: "Observatorio Cotopaxi",
+              "altura (ms)": 5897,
+              estado: "Activo",
+              superficie: 100
+            },
+            geometry: {
+              type: "Point",
+              coordinates: [-78.436, -0.677]
+            }
+          },
+          {
+            type: "Feature",
+            properties: {
+              nombre: "Observatorio Tungurahua",
+              "altura (ms)": 5023,
+              estado: "Activo",
+              superficie: 80
+            },
+            geometry: {
+              type: "Point",
+              coordinates: [-78.442, -1.467]
+            }
+          }
+        ]
+      }
+    };
+    
+    return exampleData[tableName] || { type: "FeatureCollection", features: [] };
+  }
+
+  // Función para cargar observatorios vulcanológicos
+  async function loadObservatorios() {
+    try {
+      const data = await fetchGeoJSONFromPostgres('observatorios_vulcanologicos');
+      
+      const observatoriosLayer = L.geoJSON(data, {
+        pointToLayer: function(feature, latlng) {
+          return L.circleMarker(latlng, {
+            radius: 8,
+            fillColor: '#ff0000',
+            color: '#000',
+            weight: 1,
+            opacity: 1,
+            fillOpacity: 0.8
+          });
+        },
+        onEachFeature: function (feature, layer) {
+          // Etiqueta fija
+          layer.bindTooltip(feature.properties.nombre, { 
+            permanent: true, 
+            direction: 'top',
+            className: 'observatory-label'
+          });
+          
+          // Popup con detalles
+          layer.bindPopup(`
+            <div style="min-width: 200px;">
+              <h4>${feature.properties.nombre}</h4>
+              <b>Altura:</b> ${feature.properties['altura (ms)'] || 'N/A'} msnm<br/>
+              <b>Estado:</b> ${feature.properties.estado || 'N/A'}<br/>
+              <b>Superficie:</b> ${feature.properties.superficie || 'N/A'} km²
+            </div>
+          `);
+          
+          // Evento para crear buffer y mostrar capas cercanas
+          layer.on('click', () => {
+            createBufferAndShowRelated(feature);
+          });
+        }
+      });
+      
+      layerGroups.observatorios.addLayer(observatoriosLayer);
+      layerGroups.observatorios.addTo(map);
+      
+    } catch (error) {
+      console.error('Error cargando observatorios:', error);
+    }
+  }
+
+  // Función para crear buffer y cargar objetos cercanos
+  function createBufferAndShowRelated(feature) {
+    // Limpiar buffers anteriores
+    map.eachLayer(function(layer) {
+      if (layer instanceof L.Circle && layer.options.color === 'red') {
+        map.removeLayer(layer);
+      }
+    });
+
+    const superficieKm2 = feature.properties.superficie || 50;
+    const bufferRadius = Math.sqrt(superficieKm2) * 1000;
+    const coords = feature.geometry.coordinates;
+    
+    // Crear y agregar buffer
+    const bufferCircle = L.circle([coords[1], coords[0]], {
+      radius: bufferRadius,
+      color: 'red',
+      fillOpacity: 0.2,
+      weight: 2
+    }).addTo(map);
+
+    // Aquí podrías hacer una consulta espacial a PostgreSQL
+    // para encontrar elementos dentro del buffer
+    console.log(`Buffer creado para ${feature.properties.nombre} con radio ${bufferRadius}m`);
+  }
+
+  // Función genérica para cargar capas
+  async function loadLayer(layerName, tableName, styleOptions = {}) {
+    try {
+      const data = await fetchGeoJSONFromPostgres(tableName);
+      
+      const layer = L.geoJSON(data, {
+        style: styleOptions,
+        pointToLayer: function(feature, latlng) {
+          if (layerName === 'aeropuertos') {
+            return L.marker(latlng);
+          }
+          return L.circleMarker(latlng, styleOptions);
+        },
+        onEachFeature: function(feature, layer) {
+          if (feature.properties.nombre) {
+            layer.bindPopup(`<b>${feature.properties.nombre}</b>`);
+          }
+        }
+      });
+      
+      layerGroups[layerName].addLayer(layer);
+      layerGroups[layerName].addTo(map);
+      
+    } catch (error) {
+      console.error(`Error cargando ${layerName}:`, error);
+    }
+  }
+
+  // Cargar todas las capas
+  async function loadAllLayers() {
+    document.getElementById('loading').style.display = 'block';
+    
+    await Promise.all([
+      loadObservatorios(),
+      loadLayer('cantones', 'cantones', { color: 'blue', weight: 2, fillOpacity: 0.1 }),
+      loadLayer('vias', 'vias', { color: 'green', weight: 2 }),
+      loadLayer('poblaciones', 'poblaciones2', { color: 'orange', weight: 1, fillOpacity: 0.3 }),
+      loadLayer('aeropuertos', 'aeropuertos')
+    ]);
+    
+    document.getElementById('loading').style.display = 'none';
+  }
+
+  // Control de capas
+  function setupLayerControls() {
+    Object.keys(layerGroups).forEach(layerName => {
+      const checkbox = document.getElementById(layerName);
+      checkbox.addEventListener('change', function() {
+        if (this.checked) {
+          map.addLayer(layerGroups[layerName]);
+        } else {
+          map.removeLayer(layerGroups[layerName]);
+        }
+      });
+    });
+  }
+
+  // Añadir control de capas base
+  L.control.layers(baseLayers).addTo(map);
+
+  // Inicializar
+  document.addEventListener('DOMContentLoaded', function() {
+    setupLayerControls();
+    loadAllLayers();
+  });
+
+  // Agregar algunos estilos CSS dinámicamente
+  const style = document.createElement('style');
+  style.textContent = `
+    .observatory-label {
+      background: rgba(255, 255, 255, 0.8);
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .leaflet-popup-content h4 {
+      margin: 0 0 10px 0;
+      color: #d63031;
+    }
+  `;
+  document.head.appendChild(style);
+
+</script>
+</body>
+</html>
